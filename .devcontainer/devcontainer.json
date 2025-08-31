@@ -1,0 +1,25 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the README at:
+// https://github.com/microsoft/vscode-dev-containers/tree/v0.194.3/containers/vue
+{
+    "name": "vibing-devcontainer",
+    "dockerComposeFile": "docker-compose.yml",
+    "service": "devcontainer",
+    "workspaceFolder": "/workspace",
+    // Set *default* container specific settings.json values on container create.
+    "customizations": {
+        "vscode": {
+            // Add the IDs of extensions you want installed when the container is created.
+            "extensions": [
+                "github.copilot",
+                "vscode-icons-team.vscode-icons",
+                "seatonjiang.gitmoji-vscode",
+                "zhuangtongfa.Material-theme"
+            ]
+        }
+    },
+    "forwardPorts": [
+        8080
+    ],
+    // Use 'postCreateCommand' to run commands after the container is created.
+    "remoteUser": "vscode"
+}
