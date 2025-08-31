@@ -99,12 +99,22 @@ class MouseCallbacks : public NimBLECharacteristicCallbacks {
 };
 
 class ServerCallbacks : public NimBLEServerCallbacks {
-  // Newer NimBLE versions provide NimBLEConnInfo&
-  void onConnect(NimBLEServer* s, NimBLEConnInfo&) {
+  // NimBLE onConnect callback (current signature)
+  void onConnect(NimBLEServer* s, NimBLEConnInfo&) override {
     g_bleConnected = true;
     ledBlueConnected();
     Serial.println("[BLE] Connected");
   }
+
+  // NimBLE onDisconnect callback - current signature includes reason
+  void onDisconnect(NimBLEServer* s, NimBLEConnInfo&, int reason) override {
+    g_bleConnected = false;
+    ledYellowIdle();
+    Serial.printf("[BLE] Disconnected (reason=%d) — advertising\n", reason);
+    NimBLEDevice::startAdvertising();
+  }
+
+  // Backward-compat overload for older NimBLE versions without reason param
   void onDisconnect(NimBLEServer* s, NimBLEConnInfo&) {
     g_bleConnected = false;
     ledYellowIdle();
@@ -143,6 +153,8 @@ void setup() {
   NimBLEDevice::setSecurityAuth(false, false, false);
   bleServer = NimBLEDevice::createServer();
   bleServer->setCallbacks(new ServerCallbacks());
+  // Ensure we resume advertising even if callback is missed
+  bleServer->advertiseOnDisconnect(true);
 
   NimBLEService* svc = bleServer->createService(SERVICE_UUID);
 
