@@ -84,20 +84,22 @@
         <section class="space-y-3">
             <h2 class="text-lg font-semibold text-green-200/90">Mouse</h2>
             <canvas id="mousepad" class="w-full h-72 rounded border border-green-700/40 bg-black/40"></canvas>
-            <div class="flex flex-wrap items-center gap-4">
-                <label class="inline-flex items-center gap-2 text-green-200/80">
-                    <input type="checkbox" id="lbtn">
-                    <span>L</span>
-                </label>
-                <label class="inline-flex items-center gap-2 text-green-200/80">
-                    <input type="checkbox" id="rbtn">
-                    <span>R</span>
-                </label>
-                <label class="inline-flex items-center gap-2 text-green-200/80">
-                    <input type="checkbox" id="mbtn">
-                    <span>M</span>
-                </label>
-                <div class="flex items-center gap-2 ml-auto">
+            <div class="space-y-3">
+                <div class="grid gap-3" style="grid-template-columns: 2fr 1fr 2fr;">
+                    <button id="btnLeft"
+                        class="px-4 py-3 rounded border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition">
+                        Left
+                    </button>
+                    <button id="btnMiddle"
+                        class="px-4 py-3 rounded border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition">
+                        Middle
+                    </button>
+                    <button id="btnRight"
+                        class="px-4 py-3 rounded border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition">
+                        Right
+                    </button>
+                </div>
+                <div class="flex items-center gap-2 justify-end">
                     <button id="wheelUp"
                         class="px-3 py-2 rounded border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition">Wheel
                         ↑</button>
@@ -121,7 +123,7 @@
 
         function setControlsEnabled(enabled) {
             // Enable/disable keyboard-related controls when connected/disconnected
-            ["#kb", "#send", "#nl", "#direct"].forEach(sel => {
+            ["#kb", "#send", "#nl", "#direct", "#btnLeft", "#btnMiddle", "#btnRight", "#wheelUp", "#wheelDown"].forEach(sel => {
                 const el = $(sel);
                 if (!el) return;
                 if (enabled) el.removeAttribute("disabled");
@@ -204,11 +206,10 @@
         const rect = () => pad.getBoundingClientRect();
         let lastX = 0, lastY = 0, isDown = false;
 
-        function buttonsMask() {
-            return ($("#lbtn").checked ? 1 : 0)
-                | ($("#rbtn").checked ? 2 : 0)
-                | ($("#mbtn").checked ? 4 : 0);
-        }
+        // Button state mask maintained by UI buttons: bit0=L, bit1=R, bit2=M
+        let currentButtons = 0;
+        const BTN = { L: 1, R: 2, M: 4 };
+        function buttonsMask() { return currentButtons; }
 
         async function sendMouse(dx, dy, wheel = 0) {
             if (!mouseChar) return;
@@ -218,6 +219,38 @@
             buf[2] = (dy << 24) >> 24; // int8
             buf[3] = (wheel << 24) >> 24;
             try { await mouseChar.writeValueWithoutResponse(buf); } catch { }
+        }
+
+        // Bind press/hold/click behavior for mouse buttons
+        function setButton(bit, pressed, el) {
+            const before = currentButtons;
+            if (pressed) currentButtons |= bit; else currentButtons &= ~bit;
+            if (currentButtons !== before) {
+                // Visual active state
+                if (el) el.classList.toggle("bg-primary/20", pressed);
+                // Send a buttons-only packet so host gets press/release immediately
+                sendMouse(0, 0, 0);
+            }
+        }
+
+        function bindMouseButton(selector, bit) {
+            const el = document.querySelector(selector);
+            if (!el) return;
+            // Pointer-based so it covers mouse + touch
+            el.addEventListener("pointerdown", (e) => {
+                e.preventDefault();
+                try { el.setPointerCapture(e.pointerId); } catch { }
+                setButton(bit, true, el);
+            });
+            const release = (e) => {
+                e && e.preventDefault();
+                setButton(bit, false, el);
+            };
+            el.addEventListener("pointerup", release);
+            el.addEventListener("pointercancel", release);
+            el.addEventListener("lostpointercapture", release);
+            // Avoid browser context menu on long-press/right-click
+            el.addEventListener("contextmenu", (e) => e.preventDefault());
         }
 
         function handleStart(x, y) { isDown = true; lastX = x; lastY = y; }
@@ -248,6 +281,11 @@
 
         $("#wheelUp").onclick = () => sendMouse(0, 0, +1);
         $("#wheelDown").onclick = () => sendMouse(0, 0, -1);
+
+        // Hook up L/M/R buttons
+        bindMouseButton('#btnLeft', BTN.L);
+        bindMouseButton('#btnMiddle', BTN.M);
+        bindMouseButton('#btnRight', BTN.R);
     </script>
 
 </body>
