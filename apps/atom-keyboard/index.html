@@ -1,17 +1,255 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 
 <head>
-    <meta charset='utf-8'>
-    <meta http-equiv='X-UA-Compatible' content='IE=edge'>
-    <title>Page Title</title>
-    <meta name='viewport' content='width=device-width, initial-scale=1'>
-    <link rel='stylesheet' type='text/css' media='screen' href='main.css'>
-    <script src='main.js'></script>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Remote HID for Atom</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Tailwind on CDN: extend with a neon primary green
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            DEFAULT: '#00ff88',
+                            50: '#eafff5',
+                            100: '#caffea',
+                            200: '#8effd4',
+                            300: '#5affbf',
+                            400: '#26ffa9',
+                            500: '#00ff88',
+                            600: '#00d46f',
+                            700: '#00aa59',
+                            800: '#007f42',
+                            900: '#00552c',
+                        },
+                    },
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Non-utility essentials */
+        #mousepad {
+            touch-action: none;
+        }
+
+        input[type="checkbox"] {
+            accent-color: #00ff88;
+        }
+    </style>
 </head>
 
-<body>
-    <h1>hi</h1>
+<body class="min-h-screen bg-gray-950 text-green-100 font-mono selection:bg-primary/30 selection:text-green-100">
+    <main class="max-w-3xl mx-auto p-6 md:p-8 space-y-8">
+        <header class="flex items-center justify-between">
+            <h1 class="text-2xl md:text-3xl font-semibold tracking-tight text-primary">Remote HID</h1>
+            <div class="flex items-center gap-3">
+                <button id="connect"
+                    class="px-4 py-2 rounded border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary shadow-sm transition">
+                    Connect
+                </button>
+                <span id="status" class="text-xs md:text-sm text-green-300/70">disconnected</span>
+            </div>
+        </header>
+
+        <section class="space-y-3">
+            <h2 class="text-lg font-semibold text-green-200/90">Keyboard</h2>
+            <textarea id="kb" placeholder="Type here to send keystrokes..."
+                class="w-full h-32 md:h-36 resize-y bg-black/40 text-green-100 placeholder-green-400/40 border border-green-700/30 rounded p-3 focus:outline-none focus:ring-2 focus:ring-primary/60"></textarea>
+            <div class="flex flex-wrap items-center gap-3">
+                <button id="send"
+                    class="px-4 py-2 rounded border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition">
+                    Send Text
+                </button>
+                <label class="inline-flex items-center gap-2 text-green-200/80">
+                    <input type="checkbox" id="nl" checked>
+                    <span>append Enter</span>
+                </label>
+            </div>
+
+            <div class="mt-4 space-y-2">
+                <label for="direct" class="block text-green-200/80">Direct input (sends immediately)</label>
+                <input id="direct" type="text" inputmode="text" enterkeyhint="send" autocomplete="off"
+                    autocapitalize="sentences"
+                    class="w-full bg-black/40 text-green-100 placeholder-green-400/40 border border-green-700/30 rounded p-3 focus:outline-none focus:ring-2 focus:ring-primary/60"
+                    placeholder="Tap and type…" />
+                <p class="text-xs text-green-300/60">Tip: Backspace and Enter are supported. Text is sent as you type
+                    and the field clears to keep the keyboard open.</p>
+            </div>
+        </section>
+
+        <section class="space-y-3">
+            <h2 class="text-lg font-semibold text-green-200/90">Mouse</h2>
+            <canvas id="mousepad" class="w-full h-72 rounded border border-green-700/40 bg-black/40"></canvas>
+            <div class="flex flex-wrap items-center gap-4">
+                <label class="inline-flex items-center gap-2 text-green-200/80">
+                    <input type="checkbox" id="lbtn">
+                    <span>L</span>
+                </label>
+                <label class="inline-flex items-center gap-2 text-green-200/80">
+                    <input type="checkbox" id="rbtn">
+                    <span>R</span>
+                </label>
+                <label class="inline-flex items-center gap-2 text-green-200/80">
+                    <input type="checkbox" id="mbtn">
+                    <span>M</span>
+                </label>
+                <div class="flex items-center gap-2 ml-auto">
+                    <button id="wheelUp"
+                        class="px-3 py-2 rounded border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition">Wheel
+                        ↑</button>
+                    <button id="wheelDown"
+                        class="px-3 py-2 rounded border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition">Wheel
+                        ↓</button>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        const SERVICE_UUID = "5a1a0001-8f19-4a86-9a9e-7b4f7f9b0001";
+        const KBD_CHAR_UUID = "5a1a0002-8f19-4a86-9a9e-7b4f7f9b0001";
+        const MOUSE_CHAR_UUID = "5a1a0003-8f19-4a86-9a9e-7b4f7f9b0001";
+
+        let device, server, kbdChar, mouseChar;
+
+        const $ = sel => document.querySelector(sel);
+        const status = msg => $("#status").textContent = msg;
+
+        function setControlsEnabled(enabled) {
+            // Enable/disable keyboard-related controls when connected/disconnected
+            ["#kb", "#send", "#nl", "#direct"].forEach(sel => {
+                const el = $(sel);
+                if (!el) return;
+                if (enabled) el.removeAttribute("disabled");
+                else el.setAttribute("disabled", "true");
+            });
+        }
+
+        setControlsEnabled(false);
+
+        $("#connect").onclick = async () => {
+            try {
+                device = await navigator.bluetooth.requestDevice({
+                    filters: [{ services: [SERVICE_UUID] }],
+                    optionalServices: [SERVICE_UUID]
+                });
+                device.addEventListener("gattserverdisconnected", () => { status("disconnected"); setControlsEnabled(false); });
+                server = await device.gatt.connect();
+                const svc = await server.getPrimaryService(SERVICE_UUID);
+                kbdChar = await svc.getCharacteristic(KBD_CHAR_UUID);
+                mouseChar = await svc.getCharacteristic(MOUSE_CHAR_UUID);
+                status("connected");
+                setControlsEnabled(true);
+                // Auto-focus direct input to bring up mobile keyboard quickly
+                const f = document.querySelector('#direct');
+                if (f && typeof f.focus === 'function') {
+                    setTimeout(() => f.focus({ preventScroll: true }), 0);
+                }
+            } catch (e) { console.error(e); status("error"); }
+        };
+
+        // Shared text sender with simple sequential queueing to avoid overlapping writes
+        const enc = new TextEncoder();
+        const MAX = 160; // conservative BLE write size
+        let sendChain = Promise.resolve();
+        function sendText(text) {
+            if (!kbdChar || !text) return Promise.resolve();
+            const bytes = enc.encode(text);
+            return sendChain = sendChain.then(async () => {
+                for (let i = 0; i < bytes.length; i += MAX) {
+                    const slice = bytes.slice(i, i + MAX);
+                    try { await kbdChar.writeValueWithoutResponse(slice); } catch (e) { console.warn("write failed", e); }
+                }
+            }).catch(() => { /* keep chain alive */ });
+        }
+
+        $("#send").onclick = async () => {
+            if (!kbdChar) return;
+            let txt = $("#kb").value || "";
+            if ($("#nl").checked) txt += "\n";
+            await sendText(txt);
+        };
+
+        // Direct input: send as you type, support IME composition, Enter and Backspace
+        const direct = $("#direct");
+        let composing = false;
+        function refocusDirect() { setTimeout(() => direct && direct.focus({ preventScroll: true }), 0); }
+        if (direct) {
+            direct.addEventListener("compositionstart", () => { composing = true; });
+            direct.addEventListener("compositionend", () => {
+                composing = false;
+                const v = direct.value;
+                if (v) { sendText(v); direct.value = ""; refocusDirect(); }
+            });
+            direct.addEventListener("input", () => {
+                if (composing) return;
+                const v = direct.value;
+                if (!v) return;
+                sendText(v);
+                direct.value = "";
+                refocusDirect();
+            });
+            direct.addEventListener("keydown", (e) => {
+                if (!kbdChar) return;
+                if (e.key === "Enter") { e.preventDefault(); sendText("\n"); direct.value = ""; refocusDirect(); }
+                else if (e.key === "Backspace") { e.preventDefault(); sendText("\b"); refocusDirect(); }
+            });
+        }
+
+        const pad = $("#mousepad");
+        const rect = () => pad.getBoundingClientRect();
+        let lastX = 0, lastY = 0, isDown = false;
+
+        function buttonsMask() {
+            return ($("#lbtn").checked ? 1 : 0)
+                | ($("#rbtn").checked ? 2 : 0)
+                | ($("#mbtn").checked ? 4 : 0);
+        }
+
+        async function sendMouse(dx, dy, wheel = 0) {
+            if (!mouseChar) return;
+            const buf = new Uint8Array(4);
+            buf[0] = buttonsMask();  // buttons
+            buf[1] = (dx << 24) >> 24; // int8
+            buf[2] = (dy << 24) >> 24; // int8
+            buf[3] = (wheel << 24) >> 24;
+            try { await mouseChar.writeValueWithoutResponse(buf); } catch { }
+        }
+
+        function handleStart(x, y) { isDown = true; lastX = x; lastY = y; }
+        function handleMove(x, y) {
+            if (!isDown) return;
+            const dx = Math.round((x - lastX) * 0.5); // scale factor
+            const dy = Math.round((y - lastY) * 0.5);
+            lastX = x; lastY = y;
+            if (dx || dy) sendMouse(dx, dy, 0);
+        }
+        function handleEnd() { isDown = false; }
+
+        // Mouse events
+        pad.addEventListener("mousedown", e => handleStart(e.clientX, e.clientY));
+        pad.addEventListener("mousemove", e => handleMove(e.clientX, e.clientY));
+        document.addEventListener("mouseup", handleEnd);
+
+        // Touch events
+        pad.addEventListener("touchstart", e => {
+            const t = e.changedTouches[0]; e.preventDefault();
+            handleStart(t.clientX, t.clientY);
+        }, { passive: false });
+        pad.addEventListener("touchmove", e => {
+            const t = e.changedTouches[0]; e.preventDefault();
+            handleMove(t.clientX, t.clientY);
+        }, { passive: false });
+        pad.addEventListener("touchend", e => { e.preventDefault(); handleEnd(); }, { passive: false });
+
+        $("#wheelUp").onclick = () => sendMouse(0, 0, +1);
+        $("#wheelDown").onclick = () => sendMouse(0, 0, -1);
+    </script>
+
 </body>
 
 </html>
