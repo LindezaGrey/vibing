@@ -166,6 +166,10 @@
                     <input id="wiggleEnable" type="checkbox" />
                     <span class="text-sm text-green-200/80">Enable mouse wiggler</span>
                 </label>
+                <label class="inline-flex items-center gap-2">
+                    <input id="fullscreenEnable" type="checkbox" />
+                    <span class="text-sm text-green-200/80">Fullscreen</span>
+                </label>
             </div>
             <div class="flex items-center justify-between">
                 <button id="settingsDisconnect"
@@ -210,7 +214,7 @@
 
         function setControlsEnabled(enabled) {
             // Enable/disable keyboard-related controls when connected/disconnected
-            ["#kb", "#send", "#nl", "#direct", "#btnLeft", "#btnMiddle", "#btnRight", "#wheelUp", "#wheelDown", "#wiggleEnable"].forEach(sel => {
+            ["#kb", "#send", "#nl", "#direct", "#btnLeft", "#btnMiddle", "#btnRight", "#wheelUp", "#wheelDown", "#wiggleEnable", "#fullscreenEnable"].forEach(sel => {
                 const el = $(sel);
                 if (!el) return;
                 if (enabled) el.removeAttribute("disabled");
@@ -221,9 +225,36 @@
         setControlsEnabled(false);
         setConnectedUI(false);
 
+        // Fullscreen helpers (cross-browser)
+        function isFullscreen() {
+            return document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement;
+        }
+        function requestFullscreen(el) {
+            if (el.requestFullscreen) return el.requestFullscreen();
+            if (el.webkitRequestFullscreen) return el.webkitRequestFullscreen();
+            if (el.msRequestFullscreen) return el.msRequestFullscreen();
+            return Promise.reject(new Error('Fullscreen API not supported'));
+        }
+        function exitFullscreen() {
+            if (document.exitFullscreen) return document.exitFullscreen();
+            if (document.webkitExitFullscreen) return document.webkitExitFullscreen();
+            if (document.msExitFullscreen) return document.msExitFullscreen();
+            return Promise.resolve();
+        }
+        function toggleFullscreen() {
+            try {
+                if (!isFullscreen()) {
+                    requestFullscreen(document.documentElement).catch(() => { });
+                } else {
+                    exitFullscreen().catch(() => { });
+                }
+            } catch { }
+        }
+
         // Wiggler state reflectors
         const wiggleBadge = document.getElementById('wiggleBadge');
         const wiggleEnable = document.getElementById('wiggleEnable');
+        const fullscreenEnable = document.getElementById('fullscreenEnable');
         let wiggleActive = false;
         function updateWiggleUI() {
             if (wiggleBadge) wiggleBadge.textContent = `wiggler: ${wiggleActive ? 'on' : 'off'}`;
@@ -266,6 +297,8 @@
                 status("connected");
                 setControlsEnabled(true);
                 setConnectedUI(true);
+                // Enter/exit fullscreen now that the picker is closed
+                toggleFullscreen();
                 updateWiggleUI();
                 // Default to Direct tab (no autofocus on launch)
                 activateTab('direct');
@@ -464,6 +497,8 @@
             scrollFactorInput.value = String(scrollFactor);
             mouseSpeedVal.textContent = mouseSpeed.toFixed(1);
             scrollFactorVal.textContent = String(scrollFactor);
+            // Sync fullscreen checkbox to current state
+            if (fullscreenEnable) fullscreenEnable.checked = !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement);
             settingsModal.classList.remove('hidden');
         }
         function closeSettings() { settingsModal.classList.add('hidden'); }
@@ -480,6 +515,14 @@
         settingsBtn && settingsBtn.addEventListener('click', openSettings);
         settingsClose && settingsClose.addEventListener('click', () => { applySettings(); closeSettings(); });
         settingsDone && settingsDone.addEventListener('click', () => { applySettings(); closeSettings(); });
+        // Fullscreen checkbox wiring + reflect external changes
+        function reflectFullscreenToCheckbox() {
+            if (fullscreenEnable) fullscreenEnable.checked = !!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement);
+        }
+        fullscreenEnable && fullscreenEnable.addEventListener('change', () => { toggleFullscreen(); });
+        document.addEventListener('fullscreenchange', reflectFullscreenToCheckbox);
+        document.addEventListener('webkitfullscreenchange', reflectFullscreenToCheckbox);
+        document.addEventListener('msfullscreenchange', reflectFullscreenToCheckbox);
         settingsDisconnect && settingsDisconnect.addEventListener('click', () => {
             try { device && device.gatt && device.gatt.disconnect(); } catch { }
             kbdChar = undefined; mouseChar = undefined; wiggleChar = undefined; server = undefined; wiggleActive = false; updateWiggleUI();
