@@ -59,15 +59,21 @@
 
     <!-- Main app content (hidden until connected) -->
     <main id="app" class="hidden max-w-3xl mx-auto p-6 md:p-8 space-y-8">
-        <header class="flex items-center justify-between">
+        <header class="flex items-start md:items-center justify-between gap-3">
             <h1 class="text-2xl md:text-3xl font-semibold tracking-tight text-primary">Remote Atom</h1>
-            <div class="flex items-center gap-3">
+            <div class="flex flex-col items-end gap-1 md:flex-row md:items-center md:gap-3">
                 <button id="settingsBtn" title="Settings" style="width: 38px; height: 38px;"
                     class="flex justify-center items-center rounded border border-primary/30 bg-primary/10 hover:bg-primary/20 text-primary transition">
                     <!-- Icon (library) -->
-                    <iconify-icon icon="heroicons-outline:cog-6-tooth" width="20" height="20" aria-hidden="true"></iconify-icon>
+                    <iconify-icon icon="heroicons-outline:cog-6-tooth" width="20" height="20"
+                        aria-hidden="true"></iconify-icon>
                 </button>
-                <span class="text-xs md:text-sm text-green-300/70">status: <span id="statusMain">connected</span></span>
+                <span id="wiggleBadge"
+                    class="text-[10px] md:text-xs px-2 py-1 rounded border border-green-700/40 bg-black/30 text-green-300/70">wiggler:
+                    off</span>
+                <span
+                    class="text-[10px] md:text-xs px-2 py-1 rounded border border-green-700/40 bg-black/30 text-green-300/70">status:
+                    <span id="statusMain">connected</span></span>
             </div>
         </header>
 
@@ -156,6 +162,10 @@
                     <input id="scrollFactorInput" type="range" min="1" max="10" step="1" class="w-full" />
                     <div class="text-xs text-green-300/70">Lines per tick: <span id="scrollFactorVal"></span></div>
                 </label>
+                <label class="inline-flex items-center gap-2">
+                    <input id="wiggleEnable" type="checkbox" />
+                    <span class="text-sm text-green-200/80">Enable mouse wiggler</span>
+                </label>
             </div>
             <div class="flex items-center justify-between">
                 <button id="settingsDisconnect"
@@ -170,8 +180,9 @@
         const SERVICE_UUID = "5a1a0001-8f19-4a86-9a9e-7b4f7f9b0001";
         const KBD_CHAR_UUID = "5a1a0002-8f19-4a86-9a9e-7b4f7f9b0001";
         const MOUSE_CHAR_UUID = "5a1a0003-8f19-4a86-9a9e-7b4f7f9b0001";
+        const WIGGLE_CHAR_UUID = "5a1a0004-8f19-4a86-9a9e-7b4f7f9b0001";
 
-        let device, server, kbdChar, mouseChar;
+        let device, server, kbdChar, mouseChar, wiggleChar;
 
         // UX state
         const app = document.getElementById('app');
@@ -199,7 +210,7 @@
 
         function setControlsEnabled(enabled) {
             // Enable/disable keyboard-related controls when connected/disconnected
-            ["#kb", "#send", "#nl", "#direct", "#btnLeft", "#btnMiddle", "#btnRight", "#wheelUp", "#wheelDown"].forEach(sel => {
+            ["#kb", "#send", "#nl", "#direct", "#btnLeft", "#btnMiddle", "#btnRight", "#wheelUp", "#wheelDown", "#wiggleEnable"].forEach(sel => {
                 const el = $(sel);
                 if (!el) return;
                 if (enabled) el.removeAttribute("disabled");
@@ -210,20 +221,52 @@
         setControlsEnabled(false);
         setConnectedUI(false);
 
+        // Wiggler state reflectors
+        const wiggleBadge = document.getElementById('wiggleBadge');
+        const wiggleEnable = document.getElementById('wiggleEnable');
+        let wiggleActive = false;
+        function updateWiggleUI() {
+            if (wiggleBadge) wiggleBadge.textContent = `wiggler: ${wiggleActive ? 'on' : 'off'}`;
+            if (wiggleEnable) wiggleEnable.checked = !!wiggleActive;
+        }
+
         $("#connect").onclick = async () => {
             try {
                 device = await navigator.bluetooth.requestDevice({
                     filters: [{ services: [SERVICE_UUID] }],
                     optionalServices: [SERVICE_UUID]
                 });
-                device.addEventListener("gattserverdisconnected", () => { status("disconnected"); setControlsEnabled(false); setConnectedUI(false); kbdChar = undefined; mouseChar = undefined; server = undefined; });
+                device.addEventListener("gattserverdisconnected", () => { status("disconnected"); setControlsEnabled(false); setConnectedUI(false); kbdChar = undefined; mouseChar = undefined; wiggleChar = undefined; server = undefined; wiggleActive = false; updateWiggleUI(); });
                 server = await device.gatt.connect();
                 const svc = await server.getPrimaryService(SERVICE_UUID);
                 kbdChar = await svc.getCharacteristic(KBD_CHAR_UUID);
                 mouseChar = await svc.getCharacteristic(MOUSE_CHAR_UUID);
+                // Try to get the optional wiggler characteristic
+                try {
+                    wiggleChar = await svc.getCharacteristic(WIGGLE_CHAR_UUID);
+                    if (wiggleChar) {
+                        try {
+                            const dv = await wiggleChar.readValue();
+                            const v = dv.getUint8(0);
+                            wiggleActive = !!v;
+                        } catch { }
+                        try {
+                            await wiggleChar.startNotifications();
+                            wiggleChar.addEventListener('characteristicvaluechanged', (e) => {
+                                try {
+                                    const dv = e.target.value; // DataView
+                                    const v = dv.getUint8(0);
+                                    wiggleActive = !!v;
+                                    updateWiggleUI();
+                                } catch { }
+                            });
+                        } catch { }
+                    }
+                } catch { wiggleChar = undefined; }
                 status("connected");
                 setControlsEnabled(true);
                 setConnectedUI(true);
+                updateWiggleUI();
                 // Default to Direct tab (no autofocus on launch)
                 activateTab('direct');
             } catch (e) { console.error(e); status("error"); }
@@ -439,7 +482,7 @@
         settingsDone && settingsDone.addEventListener('click', () => { applySettings(); closeSettings(); });
         settingsDisconnect && settingsDisconnect.addEventListener('click', () => {
             try { device && device.gatt && device.gatt.disconnect(); } catch { }
-            kbdChar = undefined; mouseChar = undefined; server = undefined;
+            kbdChar = undefined; mouseChar = undefined; wiggleChar = undefined; server = undefined; wiggleActive = false; updateWiggleUI();
             setControlsEnabled(false);
             setConnectedUI(false);
             status('disconnected');
@@ -448,6 +491,24 @@
         // Live preview values
         mouseSpeedInput && mouseSpeedInput.addEventListener('input', () => { mouseSpeedVal.textContent = parseFloat(mouseSpeedInput.value).toFixed(1); });
         scrollFactorInput && scrollFactorInput.addEventListener('input', () => { scrollFactorVal.textContent = String(parseInt(scrollFactorInput.value, 10)); });
+
+        // Write wiggler toggle when checkbox changes
+        wiggleEnable && wiggleEnable.addEventListener('change', async () => {
+            const desired = !!wiggleEnable.checked;
+            if (!wiggleChar) { wiggleEnable.checked = false; return; }
+            try {
+                const data = new Uint8Array([desired ? 1 : 0]);
+                // prefer write without response for snappiness
+                if (wiggleChar.writeValueWithoutResponse) await wiggleChar.writeValueWithoutResponse(data);
+                else await wiggleChar.writeValue(data);
+                // Optimistically update; notification will also confirm
+                wiggleActive = desired; updateWiggleUI();
+            } catch (e) {
+                console.warn('wiggle write failed', e);
+                // Revert UI on failure
+                wiggleEnable.checked = wiggleActive;
+            }
+        });
     </script>
 
 </body>

@@ -9,3 +9,4 @@ services:
       - ..:/workspace:cached
       - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
+      - ~/.ssh:/home/vscode/.ssh:ro

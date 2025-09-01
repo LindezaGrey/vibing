@@ -29,6 +29,7 @@ How it works in one line: Browser (Web Bluetooth) → BLE GATT → AtomS3 Lite �
 LED states on the AtomS3 Lite:
 - Yellow: advertising / not connected.
 - Blue: connected over BLE and ready.
+- Red: Mouse Wiggler active.
 
 
 ## Requirements
@@ -69,6 +70,24 @@ This repo includes a basic Nginx config to serve the static `apps` folder:
 - The Atom keyboard page will be at: http://localhost:8080/atom-keyboard/
 
 
+## Mouse Wiggler (keep-awake)
+
+Purpose
+- Prevent the target computer’s screen from locking by periodically nudging the mouse position a tiny amount.
+
+Behavior
+- The device performs a minimal left-right 10 px “jiggle” roughly every 30 seconds to avoid visible drift.
+- While active, the AtomS3 Lite LED glows red.
+
+How to toggle
+- Hardware: press the AtomS3 Lite front button to toggle ON/OFF. The LED turns red when ON.
+- Web UI: open Settings and check “Enable mouse wiggler”. The header shows a small badge “wiggler: on/off”.
+
+Notes
+- Some corporate environments enforce lock policies that ignore input from non-user activity; effectiveness can vary.
+- The interval is fixed in firmware by default and optimized to be subtle; you can adjust it in code if needed.
+
+
 ## Protocol details (for integrators)
 
 BLE Service UUID: `5a1a0001-8f19-4a86-9a9e-7b4f7f9b0001`
@@ -76,6 +95,10 @@ BLE Service UUID: `5a1a0001-8f19-4a86-9a9e-7b4f7f9b0001`
 	- Send UTF‑8 bytes. Special handling: `\n`/`\r` → Enter, `\b` → Backspace.
 - Mouse characteristic (Write Without Response): `5a1a0003-8f19-4a86-9a9e-7b4f7f9b0001`
 	- 4‑byte packet: `[buttons, dx, dy, wheel]`, where `buttons` bitmask is L=1, R=2, M=4; `dx/dy/wheel` are int8.
+- Wiggler characteristic (Read/Write/Notify): `5a1a0004-8f19-4a86-9a9e-7b4f7f9b0001`
+	- Read returns a single byte: `0` (off) or `1` (on).
+	- Write with `0`/`1` (binary or ASCII) to disable/enable.
+	- Notifies on state changes (button press or remote write).
 
 
 ## Troubleshooting

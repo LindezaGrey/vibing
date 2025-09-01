@@ -29,6 +29,7 @@ static inline void ledShowRGB(uint8_t r, uint8_t g, uint8_t b, uint8_t brightnes
 
 static inline void ledBlueConnected() { ledShowRGB(0, 64, 255); }
 static inline void ledYellowIdle()    { ledShowRGB(255, 180, 0); }
+static inline void ledRedWiggler()    { ledShowRGB(255, 0, 32); }
 
 // ---- BLE (NimBLE-Arduino recommended) ----
 #include <NimBLEDevice.h>
@@ -36,6 +37,7 @@ static inline void ledYellowIdle()    { ledShowRGB(255, 180, 0); }
 static constexpr char SERVICE_UUID[]   = "5a1a0001-8f19-4a86-9a9e-7b4f7f9b0001";
 static constexpr char KBD_CHAR_UUID[]  = "5a1a0002-8f19-4a86-9a9e-7b4f7f9b0001"; // Write (no resp)
 static constexpr char MOUSE_CHAR_UUID[] = "5a1a0003-8f19-4a86-9a9e-7b4f7f9b0001"; // Write (no resp)
+static constexpr char WIGGLE_CHAR_UUID[] = "5a1a0004-8f19-4a86-9a9e-7b4f7f9b0001"; // Read/Write/Notify (0/1)
 static constexpr char DEVICE_NAME[]    = "Atom HID Bridge"; // Friendly name shown in scanners/browsers
 
 USBHIDKeyboard Keyboard;
@@ -44,7 +46,31 @@ USBHIDMouse Mouse;
 NimBLEServer* bleServer {nullptr};
 NimBLECharacteristic* kbdChar {nullptr};
 NimBLECharacteristic* mouseChar {nullptr};
+NimBLECharacteristic* wiggleChar {nullptr};
 volatile bool g_bleConnected = false;
+
+// Mouse wiggler state
+static volatile bool g_wigglerActive = false;
+static uint32_t g_wiggleIntervalMs = 30000; // 30s default
+static uint32_t g_lastWiggleMs = 0;
+static bool g_wiggleDir = false; // toggle direction to avoid drift
+
+static inline void updateLedState() {
+  if (g_wigglerActive) { ledRedWiggler(); return; }
+  if (g_bleConnected) { ledBlueConnected(); return; }
+  ledYellowIdle();
+}
+
+static void setWiggler(bool on) {
+  g_wigglerActive = on;
+  // Reflect in characteristic and notify
+  if (wiggleChar) {
+    uint8_t v = g_wigglerActive ? 1 : 0;
+    wiggleChar->setValue(&v, 1);
+    wiggleChar->notify();
+  }
+  updateLedState();
+}
 
 class KbdCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
@@ -98,18 +124,36 @@ class MouseCallbacks : public NimBLECharacteristicCallbacks {
   }
 };
 
+class WiggleCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+    std::string v = c->getValue();
+    bool on = false;
+    if (!v.empty()) {
+      // Accept single byte or ASCII '0'/'1'
+      uint8_t b = (uint8_t)v[0];
+      on = (b != 0 && b != '0');
+    }
+    setWiggler(on);
+    Serial.printf("[WIGGLER] %s via BLE\n", on ? "ON" : "OFF");
+  }
+  void onRead(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+    uint8_t v = g_wigglerActive ? 1 : 0;
+    c->setValue(&v, 1);
+  }
+};
+
 class ServerCallbacks : public NimBLEServerCallbacks {
   // NimBLE onConnect callback (current signature)
   void onConnect(NimBLEServer* s, NimBLEConnInfo&) override {
     g_bleConnected = true;
-    ledBlueConnected();
+  updateLedState();
     Serial.println("[BLE] Connected");
   }
 
   // NimBLE onDisconnect callback - current signature includes reason
   void onDisconnect(NimBLEServer* s, NimBLEConnInfo&, int reason) override {
     g_bleConnected = false;
-    ledYellowIdle();
+  updateLedState();
     Serial.printf("[BLE] Disconnected (reason=%d) — advertising\n", reason);
     NimBLEDevice::startAdvertising();
   }
@@ -117,7 +161,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   // Backward-compat overload for older NimBLE versions without reason param
   void onDisconnect(NimBLEServer* s, NimBLEConnInfo&) {
     g_bleConnected = false;
-    ledYellowIdle();
+  updateLedState();
     Serial.println("[BLE] Disconnected — advertising");
     NimBLEDevice::startAdvertising();
   }
@@ -168,6 +212,15 @@ void setup() {
   );
   mouseChar->setCallbacks(new MouseCallbacks());
 
+  wiggleChar = svc->createCharacteristic(
+    WIGGLE_CHAR_UUID,
+    (NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY)
+  );
+  wiggleChar->setCallbacks(new WiggleCallbacks());
+  {
+    uint8_t init = 0; wiggleChar->setValue(&init, 1);
+  }
+
   svc->start();
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
@@ -189,6 +242,27 @@ void setup() {
 }
 
 void loop() {
-  // nothing: everything is event-driven; keep CDC alive
+  M5.update();
+  // Button toggle for wiggler (single-press)
+  if (M5.BtnA.wasPressed()) {
+    setWiggler(!g_wigglerActive);
+    Serial.printf("[WIGGLER] %s via Button\n", g_wigglerActive ? "ON" : "OFF");
+  }
+
+  // Periodic jiggle to keep host awake
+  if (g_wigglerActive) {
+    const uint32_t now = millis();
+    if (now - g_lastWiggleMs >= g_wiggleIntervalMs) {
+      g_lastWiggleMs = now;
+      const int8_t step = g_wiggleDir ? 10 : -10;
+      g_wiggleDir = !g_wiggleDir;
+      // Two small opposite moves with a short gap to avoid visible drift
+      Mouse.move(step, 0, 0);
+      delay(120);
+      Mouse.move(-step, 0, 0);
+    }
+  }
+
+  // keep CDC alive / yield
   delay(10);
 }
