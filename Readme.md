@@ -99,11 +99,6 @@ BLE Service UUID: `5a1a0001-8f19-4a86-9a9e-7b4f7f9b0001`
 	- Read returns a single byte: `0` (off) or `1` (on).
 	- Write with `0`/`1` (binary or ASCII) to disable/enable.
 	- Notifies on state changes (button press or remote write).
- - Host OS characteristic (Read/Write/Notify): `5a1a0005-8f19-4a86-9a9e-7b4f7f9b0001`
-	- Payload is 2 bytes: `[osCode, sourceBits]`.
-	- `osCode`: 0=Unknown, 1=Windows, 2=macOS, 3=Linux, 4=Android, 5=iOS/iPadOS, 6=ChromeOS.
-	- `sourceBits`: bit0=from BLE client, bit1=from USB heuristic (reserved for future use).
-	- Device tries to detect the OS via USB control requests: Windows (MS OS 0xEE string), macOS (Device Qualifier probe), Linux fallback after HID traffic and a short grace period. Android and ChromeOS are not strongly fingerprinted via HID; the web UI may provide a best-effort hint if still unknown.
 
 
 ## Troubleshooting
