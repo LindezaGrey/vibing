@@ -95,7 +95,7 @@
                     <input id="direct" ref="directInputRef" :disabled="!connected" type="text" inputmode="text"
                         enterkeyhint="send" autocomplete="off" autocapitalize="sentences" v-model="directInput"
                         @compositionstart="composing=true" @compositionend="onCompositionEnd" @input="onDirectInput"
-                        @keydown.enter.prevent="sendEnter" @keydown.prevent="onDirectKeydown"
+                        @keydown.enter.prevent="sendEnter" @keydown="onDirectKeydown"
                         class="w-full bg-black/40 text-green-100 placeholder-green-400/40 border border-green-700/30 rounded p-3 focus:outline-none focus:ring-2 focus:ring-primary/60"
                         placeholder="Tap and type…" />
                     <p class="text-xs text-green-300/60">Tip: Backspace and Enter are supported. Text is sent as you
@@ -363,9 +363,8 @@
                         } catch { this.wiggleChar = null; }
                         this.connected = true;
                         this.setStatus('connected');
-                        // Switch to direct tab and do a fullscreen toggle (like original)
+                        // Switch to direct tab (no longer auto-fullscreen by default)
                         this.activateTab('direct');
-                        this.toggleFullscreen();
                     } catch (e) {
                         console.error(e);
                         this.setStatus('error');
@@ -419,7 +418,7 @@
                     this.focusDirect();
                 },
                 onDirectKeydown(e) {
-                    if (e.key === 'Backspace') { this.sendBackspace(); }
+                    if (e.key === 'Backspace') { e.preventDefault(); this.sendBackspace(); }
                 },
                 sendEnter() { this.sendText('\n'); this.directInput = ''; this.focusDirect(); },
                 sendBackspace() { this.sendText('\b'); this.focusDirect(); },
@@ -435,7 +434,7 @@
                     try { await this.mouseChar.writeValueWithoutResponse(buf); } catch { }
                 },
                 onMouseDown(e) {
-                    this.isDown = true; this.lastX = e.clientX; this.lastY = e.clientY; this.focusDirect();
+                    this.isDown = true; this.lastX = e.clientX; this.lastY = e.clientY;
                 },
                 onMouseMove(e) {
                     if (!this.isDown) return;
@@ -447,7 +446,7 @@
                 onMouseUpDoc() { this.isDown = false; },
                 onTouchStart(e) {
                     const t = e.changedTouches[0];
-                    this.isDown = true; this.lastX = t.clientX; this.lastY = t.clientY; this.focusDirect();
+                    this.isDown = true; this.lastX = t.clientX; this.lastY = t.clientY;
                 },
                 onTouchMove(e) {
                     const t = e.changedTouches[0];
@@ -465,7 +464,6 @@
                     const before = this.currentButtons;
                     this.currentButtons |= bit;
                     if (this.currentButtons !== before) this.sendMouse(0, 0, 0);
-                    this.focusDirect();
                 },
                 onBtnPointerUp(name) {
                     const bit = this.bitFor(name);
@@ -473,7 +471,7 @@
                     this.currentButtons &= ~bit;
                     if (this.currentButtons !== before) this.sendMouse(0, 0, 0);
                 },
-                wheel(amount) { this.sendMouse(0, 0, amount); this.focusDirect(); },
+                wheel(amount) { this.sendMouse(0, 0, amount); },
 
                 // Settings modal
                 openSettings() {
