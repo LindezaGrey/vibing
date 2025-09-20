@@ -9,6 +9,10 @@
 #include <USB.h>
 #include <USBHIDKeyboard.h>
 #include <USBHIDMouse.h>
+// TinyUSB core headers for low-level control request inspection
+extern "C" {
+#include "tusb.h"
+}
 
 // RGB LED (AtomS3 Lite has one WS2812/SK6812 LED). Using Adafruit_NeoPixel for reliability across cores.
 // AtomS3 Lite LED data pin is GPIO35; adjust if your board revision differs.
@@ -39,6 +43,10 @@ static constexpr char KBD_CHAR_UUID[]  = "5a1a0002-8f19-4a86-9a9e-7b4f7f9b0001";
 static constexpr char MOUSE_CHAR_UUID[] = "5a1a0003-8f19-4a86-9a9e-7b4f7f9b0001"; // Write (no resp)
 static constexpr char WIGGLE_CHAR_UUID[] = "5a1a0004-8f19-4a86-9a9e-7b4f7f9b0001"; // Read/Write/Notify (0/1)
 static constexpr char DEVICE_NAME[]    = "Atom HID Bridge"; // Friendly name shown in scanners/browsers
+// New: Host OS characteristic (read/write/notify): 2 bytes payload [osCode, sourceBits]
+// osCode: 0=Unknown,1=Windows,2=macOS,3=Linux,4=Android,5=iOS,6=ChromeOS
+// sourceBits: bit0=BLE self-report, bit1=USB heuristic (future)
+static constexpr char HOST_OS_CHAR_UUID[] = "5a1a0005-8f19-4a86-9a9e-7b4f7f9b0001";
 
 USBHIDKeyboard Keyboard;
 USBHIDMouse Mouse;
@@ -47,6 +55,7 @@ NimBLEServer* bleServer {nullptr};
 NimBLECharacteristic* kbdChar {nullptr};
 NimBLECharacteristic* mouseChar {nullptr};
 NimBLECharacteristic* wiggleChar {nullptr};
+NimBLECharacteristic* hostOsChar {nullptr};
 volatile bool g_bleConnected = false;
 
 // Mouse wiggler state
@@ -54,6 +63,31 @@ static volatile bool g_wigglerActive = false;
 static uint32_t g_wiggleIntervalMs = 30000; // 30s default
 static uint32_t g_lastWiggleMs = 0;
 static bool g_wiggleDir = false; // toggle direction to avoid drift
+
+// Host OS tracking
+enum HostOS : uint8_t { OS_UNKNOWN=0, OS_WINDOWS=1, OS_MAC=2, OS_LINUX=3, OS_ANDROID=4, OS_IOS=5, OS_CHROMEOS=6 };
+static volatile uint8_t g_hostOs = OS_UNKNOWN;      // current guess/selection
+static volatile uint8_t g_hostOsSources = 0;        // bit0=BLE, bit1=USBheuristic
+static volatile bool g_usbMounted = false;
+static uint32_t g_usbMountedAtMs = 0;
+static volatile bool g_sawHidClassReq = false;      // any HID class/control traffic observed
+
+static inline void publishHostOs() {
+  if (!hostOsChar) return;
+  uint8_t v[2] = { g_hostOs, g_hostOsSources };
+  hostOsChar->setValue(v, sizeof(v));
+  hostOsChar->notify();
+}
+
+static inline void setHostOs(uint8_t os, uint8_t sourceBit) {
+  bool changed = (g_hostOs != os) || ((g_hostOsSources & sourceBit) == 0);
+  g_hostOs = os;
+  g_hostOsSources |= sourceBit;
+  if (changed) {
+    Serial.printf("[HOST-OS] os=%u sources=0x%02x\n", g_hostOs, g_hostOsSources);
+    publishHostOs();
+  }
+}
 
 static inline void updateLedState() {
   if (g_wigglerActive) { ledRedWiggler(); return; }
@@ -142,6 +176,21 @@ class WiggleCallbacks : public NimBLECharacteristicCallbacks {
   }
 };
 
+class HostOsCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+    // Accept first byte as OS code; optional second byte for source mask from client (ignored for safety)
+    std::string v = c->getValue();
+    if (v.empty()) return;
+    uint8_t code = (uint8_t)v[0];
+    if (code > OS_CHROMEOS) code = OS_UNKNOWN;
+    setHostOs(code, /*sourceBit=*/0x01); // mark BLE self-report
+  }
+  void onRead(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+    uint8_t v[2] = { g_hostOs, g_hostOsSources };
+    c->setValue(v, sizeof(v));
+  }
+};
+
 class ServerCallbacks : public NimBLEServerCallbacks {
   // NimBLE onConnect callback (current signature)
   void onConnect(NimBLEServer* s, NimBLEConnInfo&) override {
@@ -221,6 +270,17 @@ void setup() {
     uint8_t init = 0; wiggleChar->setValue(&init, 1);
   }
 
+  // Host OS characteristic (optional but useful for behavior tweaks per OS)
+  hostOsChar = svc->createCharacteristic(
+    HOST_OS_CHAR_UUID,
+    (NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY)
+  );
+  hostOsChar->setCallbacks(new HostOsCallbacks());
+  {
+    uint8_t init[2] = { OS_UNKNOWN, 0x00 };
+    hostOsChar->setValue(init, sizeof(init));
+  }
+
   svc->start();
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
@@ -241,8 +301,63 @@ void setup() {
   Serial.println("[BLE] Advertising");
 }
 
+// --- TinyUSB: Inspect control requests to infer host OS ---
+// Return false to let the default stack handle the request; we only observe.
+extern "C" bool tud_control_request_cb(uint8_t rhport, tusb_control_request_t const* request) {
+  (void)rhport;
+  // Standard GET_DESCRIPTOR
+  if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_STANDARD && request->bRequest == TUSB_REQ_GET_DESCRIPTOR) {
+    uint8_t desc_type  = tu_u16_high(request->wValue);
+    uint8_t desc_index = tu_u16_low(request->wValue);
+    if (desc_type == TUSB_DESC_STRING && desc_index == 0xEE) {
+      // Microsoft OS String Descriptor index request → strongly indicates Windows
+      setHostOs(OS_WINDOWS, 0x02);
+    } else if (desc_type == TUSB_DESC_DEVICE_QUALIFIER) {
+      // Device Qualifier request on a FS-only device is often seen on macOS during probing.
+      // Treat as macOS if we haven't already identified Windows.
+      if (g_hostOs != OS_WINDOWS) setHostOs(OS_MAC, 0x02);
+    } else if (desc_type == TUSB_DESC_REPORT) {
+      // HID Report descriptor requested — generic HID host traffic observed
+      g_sawHidClassReq = true;
+    }
+  }
+  // HID class-specific requests (to interface): mark seen to allow Linux fallback
+  if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_CLASS) {
+    // Common HID requests: GET_REPORT (0x01), GET_IDLE (0x02), SET_IDLE (0x0A), SET_PROTOCOL (0x0B)
+    switch (request->bRequest) {
+      case 0x01: case 0x02: case 0x0A: case 0x0B:
+        g_sawHidClassReq = true;
+        break;
+      default: break;
+    }
+  }
+  return false; // continue normal handling
+}
+
+extern "C" void tud_mount_cb(void) {
+  g_usbMounted = true;
+  g_usbMountedAtMs = millis();
+  // Reset transient observation flags on each mount
+  g_sawHidClassReq = false;
+}
+
+extern "C" void tud_umount_cb(void) {
+  g_usbMounted = false;
+  g_usbMountedAtMs = 0;
+  g_sawHidClassReq = false;
+}
+
 void loop() {
   M5.update();
+  // After mount, if we saw HID traffic but no strong OS signals within grace window, assume Linux/ChromeOS
+  if (g_usbMounted && g_hostOs == OS_UNKNOWN && g_sawHidClassReq) {
+    const uint32_t now = millis();
+    // 1200 ms grace lets Windows/macOS send their signature probes first
+    if (g_usbMountedAtMs && (now - g_usbMountedAtMs) > 1200) {
+      // Distinguishing Linux vs ChromeOS reliably from USB probes alone is non-trivial; prefer Linux as default
+      setHostOs(OS_LINUX, 0x02);
+    }
+  }
   // Button toggle for wiggler (single-press)
   if (M5.BtnA.wasPressed()) {
     setWiggler(!g_wigglerActive);

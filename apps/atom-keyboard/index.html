@@ -72,6 +72,9 @@
                             aria-hidden="true"></iconify-icon>
                     </button>
                     <span
+                        class="text-[10px] md:text-xs px-2 py-1 rounded border border-green-700/40 bg-black/30 text-green-300/70">host:
+                        {{ hostOsName }}</span>
+                    <span
                         class="text-[10px] md:text-xs px-2 py-1 rounded border border-green-700/40 bg-black/30 text-green-300/70">wiggler:
                         {{ wiggleActive ? 'on' : 'off' }}</span>
                     <span
@@ -225,6 +228,7 @@
                     KBD_CHAR_UUID: "5a1a0002-8f19-4a86-9a9e-7b4f7f9b0001",
                     MOUSE_CHAR_UUID: "5a1a0003-8f19-4a86-9a9e-7b4f7f9b0001",
                     WIGGLE_CHAR_UUID: "5a1a0004-8f19-4a86-9a9e-7b4f7f9b0001",
+                    HOST_OS_CHAR_UUID: "5a1a0005-8f19-4a86-9a9e-7b4f7f9b0001",
 
                     // BLE handles
                     device: null,
@@ -232,6 +236,7 @@
                     kbdChar: null,
                     mouseChar: null,
                     wiggleChar: null,
+                    hostOsChar: null,
 
                     // UI state
                     connected: false,
@@ -264,7 +269,16 @@
 
                     // send chain
                     sendChain: Promise.resolve(),
+
+                    // Host OS state (mirrors device code mapping)
+                    hostOs: 0, // 0 unknown,1 win,2 mac,3 linux,4 android,5 iOS,6 ChromeOS
                 };
+            },
+            computed: {
+                hostOsName() {
+                    const m = { 0: 'unknown', 1: 'Windows', 2: 'macOS', 3: 'Linux', 4: 'Android', 5: 'iOS', 6: 'ChromeOS' };
+                    return m[this.hostOs] || 'unknown';
+                }
             },
             mounted() {
                 // Reflect initial fullscreen state
@@ -293,6 +307,18 @@
                     return Math.min(max, Math.max(min, n));
                 },
                 setStatus(msg) { this.statusMsg = msg; },
+                detectHostOs() {
+                    const ua = navigator.userAgent || navigator.userAgentData || '';
+                    const s = String(ua).toLowerCase();
+                    // Order matters; detect iOS/iPadOS before Mac (iPad can pretend to be macOS)
+                    if (/iphone|ipad|ipod/i.test(ua) || (/(macintosh).*version\/\d+\.\d+.*mobile/i.test(ua))) return 5; // iOS/iPadOS
+                    if (s.includes('android')) return 4;
+                    if (s.includes('cros')) return 6; // ChromeOS
+                    if (s.includes('windows')) return 1;
+                    if (s.includes('mac os x') || s.includes('macintosh')) return 2;
+                    if (s.includes('linux')) return 3;
+                    return 0;
+                },
                 activateTab(name) { this.tab = name; this.$nextTick(() => { if (name === 'direct') this.focusDirect(); }); },
                 focusDirect() {
                     const el = this.$refs.directInputRef;
@@ -361,6 +387,34 @@
                                 } catch { }
                             }
                         } catch { this.wiggleChar = null; }
+                        // Host OS characteristic: prefer device-detected USB host OS; fall back to UA if unknown
+                        try {
+                            this.hostOsChar = await svc.getCharacteristic(this.HOST_OS_CHAR_UUID);
+                            if (this.hostOsChar) {
+                                try {
+                                    const dv = await this.hostOsChar.readValue();
+                                    this.hostOs = dv.getUint8(0);
+                                } catch { }
+                                try {
+                                    await this.hostOsChar.startNotifications();
+                                    this.hostOsChar.addEventListener('characteristicvaluechanged', (e) => {
+                                        try { this.hostOs = e.target.value.getUint8(0); } catch { }
+                                    });
+                                } catch { }
+                                // If device didn't detect OS yet (0), provide a hint based on UA (best-effort)
+                                try {
+                                    if (!this.hostOs) {
+                                        const code = this.detectHostOs();
+                                        if (code) {
+                                            this.hostOs = code;
+                                            const buf = new Uint8Array([code]);
+                                            if (this.hostOsChar.writeValueWithoutResponse) await this.hostOsChar.writeValueWithoutResponse(buf);
+                                            else await this.hostOsChar.writeValue(buf);
+                                        }
+                                    }
+                                } catch { }
+                            }
+                        } catch { this.hostOsChar = null; }
                         this.connected = true;
                         this.setStatus('connected');
                         // Switch to direct tab and do a fullscreen toggle (like original)
@@ -376,7 +430,7 @@
                 onDisconnected() {
                     this.connected = false;
                     this.setStatus('disconnected');
-                    this.kbdChar = this.mouseChar = this.wiggleChar = this.server = null;
+                    this.kbdChar = this.mouseChar = this.wiggleChar = this.hostOsChar = this.server = null;
                     this.wiggleActive = false;
                 },
                 async disconnect() {
