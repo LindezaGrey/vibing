@@ -9,6 +9,7 @@
 #include <USB.h>
 #include <USBHIDKeyboard.h>
 #include <USBHIDMouse.h>
+#include <USBHIDConsumerControl.h>
 
 // RGB LED (AtomS3 Lite has one WS2812/SK6812 LED). Using Adafruit_NeoPixel for reliability across cores.
 // AtomS3 Lite LED data pin is GPIO35; adjust if your board revision differs.
@@ -38,15 +39,20 @@ static constexpr char SERVICE_UUID[]   = "5a1a0001-8f19-4a86-9a9e-7b4f7f9b0001";
 static constexpr char KBD_CHAR_UUID[]  = "5a1a0002-8f19-4a86-9a9e-7b4f7f9b0001"; // Write (no resp)
 static constexpr char MOUSE_CHAR_UUID[] = "5a1a0003-8f19-4a86-9a9e-7b4f7f9b0001"; // Write (no resp)
 static constexpr char WIGGLE_CHAR_UUID[] = "5a1a0004-8f19-4a86-9a9e-7b4f7f9b0001"; // Read/Write/Notify (0/1)
+static constexpr char MEDIA_CHAR_UUID[]  = "5a1a0005-8f19-4a86-9a9e-7b4f7f9b0001"; // Write (no resp) media keys
 static constexpr char DEVICE_NAME[]    = "Atom HID Bridge"; // Friendly name shown in scanners/browsers
 
 USBHIDKeyboard Keyboard;
 USBHIDMouse Mouse;
+USBHIDConsumerControl Consumer;
+// Some USB stacks expose Consumer Control via Keyboard.consumerKey() or a separate HID class.
+// USBHIDKeyboard on ESP32 Arduino supports consumer key usages via Keyboard.consumerKey(uint16_t usage).
 
 NimBLEServer* bleServer {nullptr};
 NimBLECharacteristic* kbdChar {nullptr};
 NimBLECharacteristic* mouseChar {nullptr};
 NimBLECharacteristic* wiggleChar {nullptr};
+NimBLECharacteristic* mediaChar {nullptr};
 volatile bool g_bleConnected = false;
 
 // Mouse wiggler state
@@ -124,6 +130,36 @@ class MouseCallbacks : public NimBLECharacteristicCallbacks {
   }
 };
 
+// Media (Consumer Control) callbacks: accept 1 byte code and map to HID usages
+class MediaCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+    std::string v = c->getValue();
+    if (v.empty()) return;
+    uint8_t code = (uint8_t)v[0];
+    // Map codes to standard HID Consumer usages (0x0C page)
+    // Common usages: Play/Pause 0xCD, Scan Next 0xB5, Scan Previous 0xB6, Stop 0xB7,
+    // Mute 0xE2, Volume Up 0xE9, Volume Down 0xEA
+    uint16_t usage = 0;
+    switch (code) {
+      case 0x01: usage = 0x00CD; break; // Play/Pause
+      case 0x02: usage = 0x00B5; break; // Next
+      case 0x03: usage = 0x00B6; break; // Prev
+      case 0x04: usage = 0x00B7; break; // Stop
+      case 0x05: usage = 0x00E2; break; // Mute
+      case 0x06: usage = 0x00E9; break; // Vol Up
+      case 0x07: usage = 0x00EA; break; // Vol Down
+      default: break;
+    }
+    if (usage) {
+      Serial.printf("[MEDIA] code=0x%02X usage=0x%04X\n", code, usage);
+      // Press and release consumer usage via Consumer Control interface
+      Consumer.press(usage);
+      delay(5);
+      Consumer.release();
+    }
+  }
+};
+
 class WiggleCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
     std::string v = c->getValue();
@@ -181,6 +217,7 @@ void setup() {
   USB.begin();
   Keyboard.begin();
   Mouse.begin();
+  Consumer.begin();
   Serial.println("[USB] HID ready");
 
   // BLE init
@@ -211,6 +248,11 @@ void setup() {
     MOUSE_CHAR_UUID, NIMBLE_PROPERTY::WRITE_NR
   );
   mouseChar->setCallbacks(new MouseCallbacks());
+
+  mediaChar = svc->createCharacteristic(
+    MEDIA_CHAR_UUID, NIMBLE_PROPERTY::WRITE_NR
+  );
+  mediaChar->setCallbacks(new MediaCallbacks());
 
   wiggleChar = svc->createCharacteristic(
     WIGGLE_CHAR_UUID,

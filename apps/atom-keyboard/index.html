@@ -77,6 +77,8 @@
                         :class="['px-3 py-1 rounded-t border border-transparent', tab==='direct' ? 'text-primary bg-primary/10' : 'text-green-300/80 hover:text-primary/90']">Direct</button>
                     <button @click="activateTab('paste')"
                         :class="['px-3 py-1 rounded-t border border-transparent', tab==='paste' ? 'text-primary bg-primary/10' : 'text-green-300/80 hover:text-primary/90']">Paste</button>
+                    <button @click="activateTab('media')"
+                        :class="['px-3 py-1 rounded-t border border-transparent', tab==='media' ? 'text-primary bg-primary/10' : 'text-green-300/80 hover:text-primary/90']">Media</button>
                 </div>
                 <!-- Tab panels -->
                 <div v-show="tab==='direct'" class="space-y-2">
@@ -105,6 +107,34 @@
                             <span>append Enter</span>
                         </label>
                     </div>
+                </div>
+                <div v-show="tab==='media'" class="space-y-3">
+                    <div class="grid grid-cols-3 gap-3">
+                        <button :disabled="!connected || !mediaChar" @click="sendMedia(0x01)"
+                            class="px-3 py-2 rounded border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition disabled:opacity-60 disabled:cursor-not-allowed"
+                            title="Play/Pause">▶︎/⏸</button>
+                        <button :disabled="!connected || !mediaChar" @click="sendMedia(0x02)"
+                            class="px-3 py-2 rounded border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition disabled:opacity-60 disabled:cursor-not-allowed"
+                            title="Next Track">⏭</button>
+                        <button :disabled="!connected || !mediaChar" @click="sendMedia(0x03)"
+                            class="px-3 py-2 rounded border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition disabled:opacity-60 disabled:cursor-not-allowed"
+                            title="Previous Track">⏮</button>
+                        <button :disabled="!connected || !mediaChar" @click="sendMedia(0x04)"
+                            class="px-3 py-2 rounded border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition disabled:opacity-60 disabled:cursor-not-allowed"
+                            title="Stop">⏹</button>
+                        <button :disabled="!connected || !mediaChar" @click="sendMedia(0x05)"
+                            class="px-3 py-2 rounded border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition disabled:opacity-60 disabled:cursor-not-allowed"
+                            title="Mute">🔇</button>
+                        <button :disabled="!connected || !mediaChar" @click="sendMedia(0x06)"
+                            class="px-3 py-2 rounded border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition disabled:opacity-60 disabled:cursor-not-allowed"
+                            title="Volume Up">🔊＋</button>
+                        <button :disabled="!connected || !mediaChar" @click="sendMedia(0x07)"
+                            class="px-3 py-2 rounded border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition disabled:opacity-60 disabled:cursor-not-allowed"
+                            title="Volume Down">🔉−</button>
+                    </div>
+                    <p v-if="connected && !mediaChar" class="text-xs text-yellow-300/80">
+                        Media controls require updated firmware. Please flash the latest sketch.
+                    </p>
                 </div>
             </section>
 
@@ -233,6 +263,7 @@
                     KBD_CHAR_UUID: "5a1a0002-8f19-4a86-9a9e-7b4f7f9b0001",
                     MOUSE_CHAR_UUID: "5a1a0003-8f19-4a86-9a9e-7b4f7f9b0001",
                     WIGGLE_CHAR_UUID: "5a1a0004-8f19-4a86-9a9e-7b4f7f9b0001",
+                    MEDIA_CHAR_UUID: "5a1a0005-8f19-4a86-9a9e-7b4f7f9b0001",
 
                     // BLE handles
                     device: null,
@@ -240,6 +271,7 @@
                     kbdChar: null,
                     mouseChar: null,
                     wiggleChar: null,
+                    mediaChar: null,
 
                     // UI state
                     connected: false,
@@ -354,6 +386,8 @@
                         const svc = await this.server.getPrimaryService(this.SERVICE_UUID);
                         this.kbdChar = await svc.getCharacteristic(this.KBD_CHAR_UUID);
                         this.mouseChar = await svc.getCharacteristic(this.MOUSE_CHAR_UUID);
+                        // Optional media keys characteristic
+                        try { this.mediaChar = await svc.getCharacteristic(this.MEDIA_CHAR_UUID); } catch { this.mediaChar = null; }
                         // Optional wiggler
                         try {
                             this.wiggleChar = await svc.getCharacteristic(this.WIGGLE_CHAR_UUID);
@@ -488,6 +522,18 @@
                     if (this.currentButtons !== before) this.sendMouse(0, 0, 0);
                 },
                 wheel(amount) { this.sendMouse(0, 0, amount); },
+
+                // Media keys
+                async sendMedia(code) {
+                    if (!this.mediaChar) return;
+                    try {
+                        const data = new Uint8Array([code & 0xff]);
+                        if (this.mediaChar.writeValueWithoutResponse) await this.mediaChar.writeValueWithoutResponse(data);
+                        else await this.mediaChar.writeValue(data);
+                    } catch (e) {
+                        console.warn('media write failed', e);
+                    }
+                },
 
                 // Settings modal
                 openSettings() {
